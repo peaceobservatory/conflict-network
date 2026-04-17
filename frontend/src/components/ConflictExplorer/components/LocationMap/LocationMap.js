@@ -10,6 +10,10 @@ import LocationEventPopup from "../LocationEventPopup/LocationEventPopup";
 import SnapshotButton from "../SnapshotButton/SnapshotButton";
 import mapboxAccess from "../../utils/mapboxAccess";
 import addNoise from "../../utils/addNoise";
+import {
+  getEventMarkerRadiusForZoom,
+  getEventMarkerHitStrokeWeight,
+} from "../../utils/eventMarkerMapStyle";
 import useIsBelowMd from "../../../../hooks/useIsBelowMd";
 import {
   MapContainer,
@@ -23,7 +27,6 @@ import "leaflet.markercluster";
 import "leaflet.markercluster/dist/MarkerCluster.css";
 import "leaflet.markercluster/dist/MarkerCluster.Default.css";
 
-
 const CanvasCircleMarkers = ({
   events,
   setSelectedEvent,
@@ -34,6 +37,10 @@ const CanvasCircleMarkers = ({
 
   useEffect(() => {
     if (!map || !Array.isArray(events)) return;
+    // Circle markers default to the map's canvas renderer when preferCanvas is true.
+    // Cursor styling is applied to the whole canvas via JS and is unreliable; use SVG
+    // so each path gets a proper hover target and cursor: pointer from CSS.
+    const eventMarkerSvgRenderer = L.svg({ padding: 2 });
     const clusterGroup = L.markerClusterGroup({
       chunkedLoading: true,
       maxClusterRadius: 50,
@@ -87,7 +94,7 @@ const CanvasCircleMarkers = ({
           });
         }
 
-        var svg = '<svg xmlns="http://www.w3.org/2000/svg" width="' + px + '" height="' + px + '">'
+        var svg = '<svg xmlns="http://www.w3.org/2000/svg" width="' + px + '" height="' + px + '" style="cursor:pointer;display:block;pointer-events:auto">'
           + '<circle cx="' + r + '" cy="' + r + '" r="' + innerR + '" fill="rgba(23,52,78,0.8)"/>'
           + arcs
           + '<text x="' + r + '" y="' + r + '" text-anchor="middle" dominant-baseline="central" fill="#fff" font-size="' + (px < 48 ? 11 : 13) + '" font-weight="700">' + count + '</text>'
@@ -100,20 +107,56 @@ const CanvasCircleMarkers = ({
         });
       },
     });
-    for (let event of events) {
+    const visibleEvents = events.filter((event) => {
+      const { fillOpacity } = getColourForEvent(event);
+      return fillOpacity > 0;
+    });
+
+    const mapEl = map.getContainer();
+    let eventMarkerPointerDepth = 0;
+    const setEventMarkerPointer = () => {
+      eventMarkerPointerDepth += 1;
+      mapEl.style.cursor = "pointer";
+    };
+    const clearEventMarkerPointer = () => {
+      eventMarkerPointerDepth = Math.max(0, eventMarkerPointerDepth - 1);
+      if (eventMarkerPointerDepth === 0) {
+        mapEl.style.cursor = "";
+      }
+    };
+
+    const stopMapGestureCapture = (e) => {
+      const dom = e.originalEvent ?? e;
+      if (dom && typeof dom.stopPropagation === "function") {
+        dom.stopPropagation();
+      }
+    };
+
+    for (let event of visibleEvents) {
       const lat = addNoise(event.latitude);
       const lng = addNoise(event.longitude);
-      const { color, fillColor, fillOpacity, weight } =
-        getColourForEvent(event);
+      const { fillColor, fillOpacity } = getColourForEvent(event);
+      const z = map.getZoom();
       const marker = L.circleMarker([lat, lng], {
-        radius: 5,
-        color,
+        radius: getEventMarkerRadiusForZoom(z),
+        // Hairline from getColourForEvent is too thin for hit-testing; use a wide
+        // low-alpha stroke so clicks match hover without a bulky visible ring.
+        color: "rgba(255,255,255,0.04)",
+        weight: getEventMarkerHitStrokeWeight(z),
         fillColor,
         fillOpacity,
-        weight,
         interactive: true,
+        bubblingMouseEvents: false,
+        renderer: eventMarkerSvgRenderer,
+        className: "peor-map-event-marker",
       });
-      
+
+      marker.on("mouseover", setEventMarkerPointer);
+      marker.on("mouseout", clearEventMarkerPointer);
+
+      marker.on("mousedown", stopMapGestureCapture);
+      marker.on("touchstart", stopMapGestureCapture);
+
       marker.on("click", () => {
         setSelectedEvent(event);
       
@@ -121,8 +164,27 @@ const CanvasCircleMarkers = ({
       clusterGroup.addLayer(marker);
     }
 
+    const syncEventMarkerStyles = () => {
+      const zoomLevel = map.getZoom();
+      const r = getEventMarkerRadiusForZoom(zoomLevel);
+      const w = getEventMarkerHitStrokeWeight(zoomLevel);
+      clusterGroup.eachLayer((layer) => {
+        if (layer instanceof L.CircleMarker) {
+          layer.setStyle({ radius: r, weight: w });
+        }
+      });
+    };
+
     clusterGroup.addTo(map);
-    return () => map.removeLayer(clusterGroup);
+    syncEventMarkerStyles();
+    map.on("zoomend", syncEventMarkerStyles);
+
+    return () => {
+      map.off("zoomend", syncEventMarkerStyles);
+      mapEl.style.cursor = "";
+      eventMarkerPointerDepth = 0;
+      map.removeLayer(clusterGroup);
+    };
   }, [map, events, setSelectedEvent, getColourForEvent]);
 
   return null
@@ -293,11 +355,12 @@ export default function LocationMap({
             <GeoJSON
               key="overlay-geojson"
               data={overlayData}
-              style={{
+              style={(feature) => ({
                 fillColor: styles.neutralLight,
                 color: styles.neutralLight,
                 fillOpacity: 0.5,
-              }}
+                interactive: false,
+              })}
             />
           )}
 

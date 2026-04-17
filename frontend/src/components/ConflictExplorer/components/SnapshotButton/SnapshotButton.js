@@ -5,6 +5,14 @@ import CircularProgress from "@mui/material/CircularProgress";
 import Tooltip from "@mui/material/Tooltip";
 import { toJpeg } from "html-to-image";
 
+/** Element ids omitted from snapshot exports (overlay controls). */
+const SNAPSHOT_EXCLUDE_ELEMENT_IDS = new Set([
+  "peor-snapshot-button",
+  "peor-fullscreen-button",
+  "peor-force-toggle-button",
+  "peor-graph-reset-button",
+]);
+
 /**
  * Reusable camera snapshot button.
  *
@@ -26,8 +34,7 @@ export default function SnapshotButton({ targetRef, label = "snapshot", filename
         cacheBust: true,
         // Leaflet tiles are cross-origin; skip them gracefully
         filter: (node) => {
-          // Exclude UI buttons and map controls from the downloaded screenshot
-          if (node.id === "peor-snapshot-button" || node.id === "peor-fullscreen-button") {
+          if (node.id && SNAPSHOT_EXCLUDE_ELEMENT_IDS.has(node.id)) {
             return false;
           }
           if (node.classList && node.classList.contains("leaflet-control-container")) {

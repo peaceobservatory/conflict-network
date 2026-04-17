@@ -28,3 +28,73 @@
         border-left: 1px solid $light-grey-100;
     }
 }
+
+// NegotiationItem is used inside DyadView (where .dyad-view .dyad-content supplies table rules)
+// and embedded in modals (e.g. conflict explorer LinkCard), where those rules do not apply.
+// Without width: 100% + fixed layout, the table shrink-wraps to content and sits in a corner.
+.table-container {
+    width: 100%;
+    min-width: 0;
+    box-sizing: border-box;
+
+    .dyad-table-wrapper {
+        width: 100%;
+        max-width: 100%;
+        table-layout: fixed;
+        border-collapse: separate;
+        border-spacing: 0;
+
+        .dyad-table-header-wrapper th {
+            background: $light-grey-50;
+            border-bottom: 1px solid $light-grey-100;
+            padding: 17px 20px 17px 10px;
+            text-align: left;
+            vertical-align: middle;
+
+            &.tableHead {
+                margin: 0;
+                line-height: 1.5;
+                color: $dark-blue;
+                font-size: 12pt;
+                font-weight: 600;
+
+                svg {
+                    fill: $dark-blue;
+                }
+            }
+
+            &:first-child {
+                border-radius: 10px 0 0 0;
+            }
+
+            &:last-child {
+                width: 56px;
+                min-width: 56px;
+                max-width: 56px;
+                padding-left: 8px;
+                padding-right: 12px;
+                text-align: center;
+                border-right: 1px solid $light-grey-100;
+                border-radius: 0 10px 0 0;
+            }
+        }
+
+        tbody tr td {
+            background: $white;
+            border-top: 1px solid $light-grey-100;
+            padding: 18px 20px 17px 10px;
+            vertical-align: middle;
+            word-wrap: break-word;
+            overflow-wrap: break-word;
+
+            &:last-child {
+                width: 56px;
+                min-width: 56px;
+                max-width: 56px;
+                padding-left: 8px;
+                padding-right: 12px;
+                text-align: start;
+            }
+        }
+    }
+}

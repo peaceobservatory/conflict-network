@@ -15,6 +15,9 @@ import Typography from "@mui/material/Typography";
 import IconButton from "@mui/material/IconButton";
 import FullscreenIcon from "@mui/icons-material/Fullscreen";
 import FullscreenExitIcon from "@mui/icons-material/FullscreenExit";
+import PauseIcon from "@mui/icons-material/Pause";
+import PlayArrowIcon from "@mui/icons-material/PlayArrow";
+import RestartAltIcon from "@mui/icons-material/RestartAlt";
 import Tooltip from "@mui/material/Tooltip";
 
 // utils
@@ -30,19 +33,70 @@ import { forceSimulation, forceManyBody, forceLink, forceCenter, forceCollide, f
 import { scaleBand, scaleRadial } from "d3-scale";
 import { arc } from "d3-shape";
 import { drag as d3Drag } from "d3-drag";
-import { zoom } from "d3-zoom";
+import { zoom, zoomIdentity } from "d3-zoom";
 import "d3-transition";
 import { easeCubicInOut } from "d3-ease";
 import cloneDeep from "lodash/cloneDeep";
 import uniq from "lodash/uniq";
 
+function getLinkPath(d) {
+  if (d?.linkType === 2) {
+    let x1, y1, x2, y2;
+    const src = d.source;
+    const tgt = d.target;
+    const srcIsMediator = src?.node_type === "third_party";
+    const tgtIsMediator = tgt?.node_type === "third_party";
+    if (tgtIsMediator && !srcIsMediator) {
+      x1 = tgt.x; y1 = tgt.y; x2 = src.x; y2 = src.y;
+    } else {
+      x1 = src.x; y1 = src.y; x2 = tgt.x; y2 = tgt.y;
+    }
+    return `M${x1},${y1}L${x2},${y2}`;
+  }
+  return `M${d.source.x},${d.source.y}L${d.target.x},${d.target.y}`;
+}
+
+function getMediationLinkCount(d) {
+  const directCount =
+    d?.["mediation_count"] ??
+    d?.["mediationCount"] ??
+    d?.["mediated_count"] ??
+    d?.["mediatedCount"] ??
+    d?.["negotiation_count"] ??
+    d?.["negotiationCount"] ??
+    d?.["peace_count"] ??
+    d?.["peaceCount"] ??
+    d?.["count"];
+
+  const normalizedDirectCount = Number(directCount);
+  if (Number.isFinite(normalizedDirectCount) && normalizedDirectCount > 0) {
+    return normalizedDirectCount;
+  }
+
+  const listCount =
+    d?.peace_data?.length ??
+    d?.peaceData?.length ??
+    d?.negotiations?.length ??
+    d?.reports?.length;
+
+  if (typeof listCount === "number" && Number.isFinite(listCount) && listCount > 0) {
+    return listCount;
+  }
+
+  return 1;
+}
+
 export default function LocationGraph(props) {
   const wrapperRef = useRef();
   const svgRef = useRef();
   const simulationRef = useRef(null);
+  const interactionSimulationRef = useRef(null);
+  const zoomBehaviorRef = useRef(null);
   const cachedPositionsRef = useRef(null);
+  const baselinePositionsRef = useRef({}); // { [layoutAlgo]: { [actor_id]: {x,y} } }
   const graphDataRef = useRef(null); // stores {nodes, links, node, link, containerSize}
   const prevLayoutAlgoRef = useRef('force-directed');
+  const hasInitialForceSettledRef = useRef(false);
   const [forcePosition, setForceCenter] = useState([250, 350]);
   const [selectedNodes, setSelectedNodes] = useState([]);
   const [colourSettings, setColourSettings] = useState({});
@@ -54,6 +108,9 @@ export default function LocationGraph(props) {
   const [linkSelection, setLinkSelection] = useState(null);
   const [selectedActor, setSelectedActor] = useState("");
   const [openActorCard, setOpenActorCard] = useState(false);
+  // Play: force-style interaction while dragging (neighbors move). Pause: simulations off; drag only the picked node; others stay put.
+  const [isPhysicsPlaying, setIsPhysicsPlaying] = useState(true);
+  const isPhysicsPlayingRef = useRef(true);
   const isBelowMd = useIsBelowMd();
 
   // Keep a reference to the latest props and states to avoid stale closures in D3 click handlers
@@ -70,6 +127,224 @@ export default function LocationGraph(props) {
   }, [props, selectedNodes, linkSelection]);
 
   useEffect(() => {
+    isPhysicsPlayingRef.current = isPhysicsPlaying;
+  }, [isPhysicsPlaying]);
+
+  function applyDragBinding() {
+    const gd = graphDataRef.current;
+    if (!gd?.nodeSelection || !gd?.ticked) return;
+
+    const { nodeSelection, ticked } = gd;
+
+    const startInteractionSimIfNeeded = () => {
+      const g = graphDataRef.current;
+      if (!g?.nodes || !g?.links) return null;
+      if (interactionSimulationRef.current) return interactionSimulationRef.current;
+
+      const { nodes, links, linkSelection: linkSel, nodeSelection: nodeSel, containerSize } = g;
+
+      // Very light physics to provide repulsion/collision while dragging,
+      // without "taking over" the user's manual layout.
+      const sim = forceSimulation(nodes)
+        .alpha(0.25)
+        .alphaDecay(0.08)
+        .force(
+          "link",
+          forceLink(links)
+            .id((d) => d.actor_id)
+            .distance(200)
+            .strength(0.03)
+        )
+        .force("charge", forceManyBody().strength(-80).distanceMax(250))
+        .force("collision", forceCollide().radius(containerSize / 2))
+        .on("tick", () => {
+          linkSel.attr("d", getLinkPath);
+          nodeSel.attr("transform", (d) => `translate(${d.x - containerSize / 2},${d.y - containerSize / 2})`);
+        });
+
+      interactionSimulationRef.current = sim;
+      return sim;
+    };
+
+    nodeSelection.style("cursor", () => "grab").call(
+      d3Drag()
+        .on("start", function (event) {
+          // Stop any in-flight animation/settling so drag feels stable.
+          if (simulationRef.current) {
+            simulationRef.current.stop();
+            simulationRef.current = null;
+            hasInitialForceSettledRef.current = true;
+          }
+          try {
+            nodeSelection.interrupt();
+          } catch (_) {}
+
+          const playing = isPhysicsPlayingRef.current;
+
+          if (playing) {
+            const sim = startInteractionSimIfNeeded();
+            if (sim) {
+              sim.alphaTarget(0.25).restart();
+            }
+          } else if (interactionSimulationRef.current) {
+            interactionSimulationRef.current.stop();
+            interactionSimulationRef.current = null;
+          }
+
+          event.subject.fx = event.subject.x;
+          event.subject.fy = event.subject.y;
+        })
+        .on("drag", function (event) {
+          const playing = isPhysicsPlayingRef.current;
+          event.subject.fx = event.x;
+          event.subject.fy = event.y;
+          event.subject.x = event.x;
+          event.subject.y = event.y;
+          if (!playing || !interactionSimulationRef.current) {
+            ticked();
+          }
+        })
+        .on("end", function (event) {
+          const playing = isPhysicsPlayingRef.current;
+          const subject = event.subject;
+          subject.x = subject.fx;
+          subject.y = subject.fy;
+
+          if (!playing) {
+            subject.fx = subject.x;
+            subject.fy = subject.y;
+            ticked();
+            return;
+          }
+
+          if (!interactionSimulationRef.current) {
+            subject.fx = null;
+            subject.fy = null;
+            ticked();
+          } else {
+            const sim = interactionSimulationRef.current;
+            sim.alphaTarget(0);
+            setTimeout(() => {
+              if (interactionSimulationRef.current === sim) {
+                sim.stop();
+                interactionSimulationRef.current = null;
+                subject.fx = null;
+                subject.fy = null;
+                ticked();
+              }
+            }, 300);
+          }
+        })
+    );
+  }
+
+  function saveBaselinePositions(layoutAlgo) {
+    const gd = graphDataRef.current;
+    if (!gd?.nodes) return;
+    const positions = {};
+    gd.nodes.forEach((n) => {
+      positions[n.actor_id] = { x: n.x, y: n.y };
+    });
+    baselinePositionsRef.current[layoutAlgo] = positions;
+  }
+
+  function resetToBaseline() {
+    const layoutAlgo = props.layoutAlgorithm || "force-directed";
+    const gd = graphDataRef.current;
+    if (!gd?.nodes || !gd?.ticked) return;
+
+    const baseline =
+      baselinePositionsRef.current?.[layoutAlgo] ||
+      (layoutAlgo === "force-directed" ? cachedPositionsRef.current : null);
+    if (!baseline) return;
+
+    gd.nodes.forEach((n) => {
+      const b = baseline[n.actor_id];
+      if (!b) return;
+      n.x = b.x;
+      n.y = b.y;
+      n.fx = null;
+      n.fy = null;
+    });
+    gd.ticked();
+    applyDragBinding();
+  }
+
+  function zoomToFit({ padding = 48, maxScale = 1 } = {}) {
+    const gd = graphDataRef.current;
+    const svgEl = svgRef.current;
+    const wrapperEl = wrapperRef.current;
+    const zoomBehavior = zoomBehaviorRef.current;
+    if (!gd?.nodes?.length || !svgEl || !zoomBehavior) return;
+
+    const width = svgEl.clientWidth || wrapperEl?.clientWidth || 0;
+    const height = svgEl.clientHeight || wrapperEl?.clientHeight || 0;
+    if (width <= 0 || height <= 0) return;
+
+    let minX = Infinity;
+    let minY = Infinity;
+    let maxX = -Infinity;
+    let maxY = -Infinity;
+
+    const r = (gd.containerSize || 45) / 2;
+    gd.nodes.forEach((n) => {
+      const x = n?.x ?? 0;
+      const y = n?.y ?? 0;
+      if (x - r < minX) minX = x - r;
+      if (y - r < minY) minY = y - r;
+      if (x + r > maxX) maxX = x + r;
+      if (y + r > maxY) maxY = y + r;
+    });
+
+    if (!Number.isFinite(minX) || !Number.isFinite(minY) || !Number.isFinite(maxX) || !Number.isFinite(maxY)) return;
+
+    const boundsWidth = Math.max(1, maxX - minX);
+    const boundsHeight = Math.max(1, maxY - minY);
+
+    const scale = Math.min(
+      maxScale,
+      (width - padding * 2) / boundsWidth,
+      (height - padding * 2) / boundsHeight
+    );
+
+    const midX = (minX + maxX) / 2;
+    const midY = (minY + maxY) / 2;
+
+    const transform = zoomIdentity
+      .translate(width / 2 - scale * midX, height / 2 - scale * midY)
+      .scale(scale);
+
+    select(svgEl)
+      .transition()
+      .duration(450)
+      .call(zoomBehavior.transform, transform);
+  }
+
+  useEffect(() => {
+    if (!isPhysicsPlaying) {
+      if (simulationRef.current) {
+        simulationRef.current.stop();
+        simulationRef.current = null;
+      }
+      if (interactionSimulationRef.current) {
+        interactionSimulationRef.current.stop();
+        interactionSimulationRef.current = null;
+      }
+    } else {
+      const gd = graphDataRef.current;
+      if (gd?.nodes) {
+        gd.nodes.forEach((n) => {
+          n.fx = null;
+          n.fy = null;
+        });
+        gd.ticked?.();
+      }
+    }
+    applyDragBinding();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isPhysicsPlaying]);
+
+  useEffect(() => {
     setColourSettings(props.eventTypeColours);
   }, [props.eventTypeColours]);
 
@@ -82,13 +357,34 @@ export default function LocationGraph(props) {
   }, [JSON.stringify(props.selectedInGraph)]); // stringify to be able to use array as dependency
 
   useEffect(() => {
+    const el = wrapperRef.current;
+    if (!el) return;
+
     const resizeObserver = new ResizeObserver((entries) => {
-      const graph_height = entries[0].borderBoxSize[0].blockSize;
-      const graph_width = entries[0].borderBoxSize[0].inlineSize;
-      setForceCenter([graph_width / 2, graph_height / 2]);
+      const entry = entries?.[0];
+      if (!entry) return;
+
+      // `borderBoxSize` isn't supported consistently across browsers.
+      // Use `contentRect` as a safe fallback.
+      const width =
+        entry.borderBoxSize?.[0]?.inlineSize ??
+        entry.contentRect?.width ??
+        el.clientWidth ??
+        0;
+      const height =
+        entry.borderBoxSize?.[0]?.blockSize ??
+        entry.contentRect?.height ??
+        el.clientHeight ??
+        0;
+
+      if (width > 0 && height > 0) {
+        setForceCenter([width / 2, height / 2]);
+      }
     });
-    resizeObserver.observe(wrapperRef.current);
-  });
+
+    resizeObserver.observe(el);
+    return () => resizeObserver.disconnect();
+  }, []);
 
   function scaleBetween(unscaledNum, minAllowed, maxAllowed, min, max) {
     // https://stackoverflow.com/questions/5294955/how-to-scale-down-a-range-of-numbers-with-a-known-min-and-max-value
@@ -101,17 +397,47 @@ export default function LocationGraph(props) {
   function getLinkWidth(d) {
     let maxLinkWidth = props.linkWidth;
     let minLinkWidth = 3;
-    let maxLinkSize = props.graphData.max_link;
-    const linkCount = d["count"]; 
+    // Ensure there is always a visible width range.
+    // If max equals min, all links render at same thickness.
+    if (!Number.isFinite(maxLinkWidth) || maxLinkWidth <= minLinkWidth) {
+      maxLinkWidth = minLinkWidth + 6;
+    }
+    const isMediation = d?.["linkType"] === 2;
+    const linkCount = isMediation
+      ? getMediationLinkCount(d)
+      : (d?.["count"] ?? d?.reports?.length ?? 1);
+
+    // Scale mediation links relative to mediation links only.
+    // Otherwise a very large conflict `max_link` compresses mediation widths.
+    let maxLinkSize = props.graphData.max_link ?? Math.max(linkCount, 1);
+    if (isMediation) {
+      const mediationLinks = props.graphData?.links?.filter((l) => l?.linkType === 2) || [];
+      const mediationMax = mediationLinks.reduce(
+        (maxVal, link) => Math.max(maxVal, getMediationLinkCount(link)),
+        1
+      );
+      maxLinkSize = mediationMax;
+    }
+    
+    // Safety fallback just in case maxLinkSize is less than 1
+    maxLinkSize = Math.max(maxLinkSize, 1);
+
+    // Keep mediation width differences visible but subtle.
+    const scaledInput = isMediation ? Math.sqrt(linkCount) : linkCount;
+    const scaledMaxInput = isMediation ? Math.sqrt(maxLinkSize) : maxLinkSize;
+    const effectiveMaxLinkWidth = isMediation
+      ? Math.min(maxLinkWidth, minLinkWidth + 4)
+      : maxLinkWidth;
+
     let scaled = scaleBetween(
-        linkCount,
+        scaledInput,
         minLinkWidth,
-        maxLinkWidth,
+        effectiveMaxLinkWidth,
         1,
-        maxLinkSize
+        Math.max(scaledMaxInput, 1)
     );
     return scaled;
-}
+  }
 
 
 
@@ -123,7 +449,7 @@ export default function LocationGraph(props) {
       } else if (d["linkType"] === 1) {
         return currentLinkColours["opposition"]?.["colour"] || "#000000";
       } else if (d["linkType"] === 2) {
-        return currentLinkColours["mediation"]?.["colour"] || "#1565C0"; // Default colour for mediation if undefined
+        return currentLinkColours["mediation"]?.["colour"] || styles.darkBlue; // Default colour for mediation if undefined
       } else {
         return currentLinkColours["other"]?.["colour"] || "#000000";
       }
@@ -174,7 +500,6 @@ export default function LocationGraph(props) {
   }
 
   function mouseoverLink(event, d) {
-    if (d["linkType"] === 2) return;
     select(
       "#graph-link-" + d["source"].actor_id + "-" + d["target"].actor_id
     ).attr("stroke", function (d) {
@@ -183,7 +508,6 @@ export default function LocationGraph(props) {
   }
 
   function mousemoveLink(event, d) {
-    if (d["linkType"] === 2) return;
     select(
       "#graph-link-" + d["source"].actor_id + "-" + d["target"].actor_id
     ).attr("stroke", function (d) {
@@ -192,7 +516,6 @@ export default function LocationGraph(props) {
   }
 
   function mouseleaveLink(event, d) {
-    if (d["linkType"] === 2) return;
     select(
       "#graph-link-" + d["source"].actor_id + "-" + d["target"].actor_id
     ).attr("stroke", function (d) {
@@ -237,7 +560,6 @@ export default function LocationGraph(props) {
   }
 
   function handleClickLink(link) {
-    if (link["linkType"] === 2) return;
     const currentLinkSelection = latestLinkSelectionRef.current;
     if (currentLinkSelection) {
       if (link["linkType"] === 0) {
@@ -263,7 +585,6 @@ export default function LocationGraph(props) {
   }
 
   function getLinkCursorType(link) {
-    if (link["linkType"] === 2) return "default";
     const currentLinkSelection = latestLinkSelectionRef.current;
     if (!currentLinkSelection) return "pointer";
 
@@ -306,12 +627,13 @@ export default function LocationGraph(props) {
         return 0;
       });
 
-    // Update link opacities/cursors/colours
+    // Update link opacities/cursors/colours/widths
     svg.selectAll(".graph-link-path")
       .style("cursor", (d) => getLinkCursorType(d))
       .style("opacity", (d) => getLinkOpacity(d))
       .attr("stroke", (d) => getLinkColour(d))
-      .attr("stroke-dasharray", (d) => getLinkStyle(d));
+      .attr("stroke-dasharray", (d) => getLinkStyle(d))
+      .attr("stroke-width", (d) => getLinkWidth(d));
 
     // Update radial bar colours
     svg.selectAll(".radial-bar")
@@ -338,7 +660,9 @@ export default function LocationGraph(props) {
     const data = props.graphData;
     const svg = select(svgRef.current);
 
-    if (props.eventTypeColours && props.linkTypeColours) {
+    // Always render the graph as soon as `graphData` is available.
+    // Colours/actors can arrive later; we update styling in separate effects.
+    if (data?.nodes && data?.links) {
       const highlightWidth = 5;
 
       let containerSize = 45;
@@ -375,6 +699,7 @@ export default function LocationGraph(props) {
       svg.selectAll("line").remove();
       svg.selectAll("text").remove();
       svg.selectAll("svg").remove();
+      svg.selectAll("defs").remove();
 
       // ---- Shared helper functions for both layouts ----
       function getIconPathByID(id) {
@@ -412,16 +737,21 @@ export default function LocationGraph(props) {
         return bars;
       }
 
-      const eventTypes = props.actors[0]
-        ? props.actors[0].eventTypeSummary
-        : {};
+      // Build a stable event-type domain even if actors/colours haven't loaded yet.
+      const eventTypes =
+        (props.actors?.[0]?.eventTypeSummary) ||
+        props.eventTypeColours ||
+        colourSettings ||
+        {};
+      const eventTypeKeys = Object.keys(eventTypes);
+      const xDomain = eventTypeKeys.length > 0 ? eventTypeKeys : ["mediation"];
 
       // X scale for radial bars
       const x = 
         scaleBand()
         .range([0, -2 * Math.PI])
         .align(0)
-        .domain(Object.keys(eventTypes));
+        .domain(xDomain);
 
       // Y scale for radial bars
       const y =
@@ -469,7 +799,7 @@ export default function LocationGraph(props) {
         .force("collision", forceCollide().radius(containerSize / 2))
         .on("tick", ticked);
 
-      // Only fire simulation if we are in force-directed mode
+      // Only run the dynamic simulation for the default (force-directed) layout.
       if (currentLayout !== 'force-directed') {
           simulation.stop();
       }
@@ -489,6 +819,7 @@ export default function LocationGraph(props) {
             positions[n.actor_id] = { x: n.x, y: n.y };
           });
           cachedPositionsRef.current = positions;
+          baselinePositionsRef.current["force-directed"] = positions;
         }
       }, 1000);
 
@@ -496,6 +827,11 @@ export default function LocationGraph(props) {
       setTimeout(function () {
         if (simulationRef.current === simulation) {
           simulation.stop();
+          // After settling, we want manual dragging without physics pulling back.
+          simulationRef.current = null;
+          hasInitialForceSettledRef.current = true;
+          saveBaselinePositions("force-directed");
+          zoomToFit();
         }
       }, 2000);
 
@@ -507,6 +843,8 @@ export default function LocationGraph(props) {
         .join("path")
         .attr("class", "graph-link-path")
         .attr("fill", "none")
+        // Allow mediation edges to be interacted with
+        .style("pointer-events", "stroke")
         .attr(
           "id",
           (d) => {
@@ -539,9 +877,10 @@ export default function LocationGraph(props) {
         .data(filteredNodes)
         .join("g")
         .attr("class", "node-group")
-        .style("cursor", (d) => (d.node_type === "third_party" ? "default" : "pointer"))
+        .style("cursor", () => "grab")
         .on("click", handleClickNode)
-        .call(drag(simulation));
+        // Drag behavior is (re)applied by a separate effect based on isPhysicsPlaying.
+        .call(drag(null));
 
       let nodeItem = node.append("g");
 
@@ -630,13 +969,14 @@ export default function LocationGraph(props) {
         nodeSelection: node,
         linkSelection: link,
         containerSize: containerSize,
+        ticked: ticked,
       };
+      // Bind drag handlers to the freshly created node elements.
+      applyDragBinding();
 
       // This function is run at each iteration of the force algorithm, updating the nodes position.
       function ticked() {
-        link.attr("d", (d) => {
-          return `M${d.source.x},${d.source.y}L${d.target.x},${d.target.y}`;
-        });
+        link.attr("d", getLinkPath);
 
           node.attr("transform", (d) => `translate(${d.x - containerSize / 2},${d.y - containerSize / 2})`);
       }
@@ -651,8 +991,11 @@ export default function LocationGraph(props) {
       }
 
       let zoomGraph = zoom().on("zoom", handleZoom);
+      zoomBehaviorRef.current = zoomGraph;
 
       svg.call(zoomGraph);
+      // Ensure the full network is visible by default (esp. when node count jumps).
+      setTimeout(() => zoomToFit(), 0);
 
 
       function drag(sim) {
@@ -711,68 +1054,83 @@ export default function LocationGraph(props) {
       n.startY = n.y;
     });
 
-    // ---- Stop current simulation before doing any morphing ----
+    if (layoutAlgo === 'force-directed') {
+      // IMPORTANT: On initial render, allow the default force simulation (created in the build effect)
+      // to run briefly so the graph settles, then it will stop itself.
+      if (!hasInitialForceSettledRef.current) {
+        // If the initial simulation was interrupted earlier, start recovery settle now.
+        if (!simulationRef.current) {
+          hasInitialForceSettledRef.current = true;
+        } else {
+        return;
+        }
+      }
+
+      // Re-run a short force settle whenever the user switches back to default.
+      // Then stop, so manual dragging doesn't snap back.
+      if (simulationRef.current) {
+        simulationRef.current.stop();
+        simulationRef.current = null;
+      }
+      if (interactionSimulationRef.current) {
+        interactionSimulationRef.current.stop();
+        interactionSimulationRef.current = null;
+      }
+
+      // Clear any fixed positions from manual drags so the default layout can re-flow.
+      nodes.forEach((n) => {
+        n.fx = null;
+        n.fy = null;
+      });
+
+      const linkForce = forceLink(links)
+        .id((d) => d.actor_id)
+        .distance(200);
+
+      const sim = forceSimulation(nodes)
+        .alpha(1)
+        .alphaDecay(0.03)
+        .force("link", linkForce)
+        .force("charge", forceManyBody().strength(-300).distanceMax(400))
+        .force("center", forceCenter().x(forcePosition[0]).y(forcePosition[1]))
+        .force("collision", forceCollide().radius(containerSize / 2))
+        .force("forceX", forceX(forcePosition[0]).strength(0.1))
+        .force("forceY", forceY(forcePosition[1]).strength(0.1))
+        .on("tick", () => {
+          linkSel.attr("d", getLinkPath);
+          nodeSelection.attr("transform", (d) => `translate(${d.x - containerSize / 2},${d.y - containerSize / 2})`);
+        });
+
+      simulationRef.current = sim;
+
+      setTimeout(() => {
+        if (simulationRef.current === sim) {
+          const positions = {};
+          nodes.forEach((n) => {
+            positions[n.actor_id] = { x: n.x, y: n.y };
+          });
+          cachedPositionsRef.current = positions;
+          baselinePositionsRef.current["force-directed"] = positions;
+          sim.stop();
+          simulationRef.current = null;
+          applyDragBinding();
+          zoomToFit();
+        }
+      }, 1200);
+
+      return;
+    }
+
+    // ---- Stop current simulation before doing any non-default morphing ----
+    // Mark initial settle gate as complete even if we switch away early, so
+    // returning to default can always run its own settle simulation.
+    hasInitialForceSettledRef.current = true;
     if (simulationRef.current) {
       simulationRef.current.stop();
     }
-
-    if (layoutAlgo === 'force-directed') {
-      const defSim = defaultSimulationRef.current;
-      
-      // Ensure the simulation is running if we are in force-directed mode
-      if (defSim) {
-          if (defSim.alpha() < 0.05) {
-              defSim.alpha(1);
-          }
-          defSim.restart();
-      }
-
-      // If we have cached positions, restore them and restart simulation
-      if (cachedPositionsRef.current) {
-        nodes.forEach((n) => {
-          const cached = cachedPositionsRef.current[n.actor_id];
-          if (cached) {
-            n.x = cached.x;
-            n.y = cached.y;
-            n.fx = null;
-            n.fy = null;
-          }
-        });
-
-        // Animate to cached positions
-        const t = select(svgRef.current).transition()
-          .duration(750)
-          .ease(easeCubicInOut);
-
-        linkSel.transition(t)
-          .attr("d", (d) => {
-              return `M${d.source.x},${d.source.y}L${d.target.x},${d.target.y}`;
-          });
-
-        nodeSelection.transition(t)
-          .attr("transform", (d) => `translate(${d.x - containerSize / 2},${d.y - containerSize / 2})`);
-
-        // RESTORE the original Force-Directed drag behavior so clicks don't resurrect the old static layout physics
-        const defSim = defaultSimulationRef.current;
-        simulationRef.current = defSim;
-        
-        nodeSelection.call(
-          d3Drag()
-            .on("start", function (event) {
-              if (defSim && !event.active) defSim.alphaTarget(0.3).restart();
-              event.subject.fx = event.subject.x;
-              event.subject.fy = event.subject.y;
-            })
-            .on("drag", function (event) {
-              event.subject.fx = event.x;
-              event.subject.fy = event.y;
-            })
-            .on("end", function (event) {
-              if (defSim && !event.active) defSim.alphaTarget(0);
-            })
-        );
-      }
-      return;
+    if (interactionSimulationRef.current) {
+      interactionSimulationRef.current.stop();
+      interactionSimulationRef.current = null;
     }
 
     // Compute positions with the chosen algorithm
@@ -796,39 +1154,41 @@ export default function LocationGraph(props) {
       n.fy = null;
     });
 
-    // Start a fresh, targeted force simulation for this static layout
-    const simulation = forceSimulation(nodes)
-      .alpha(1)
-      .alphaDecay(0.015) // Slightly slower decay for a nice visible settle
-      .force("charge", forceManyBody().strength(-100).distanceMax(250)) // Light repulsion
-      .force("collision", forceCollide().radius(containerSize / 2))
-      .force("x", forceX(d => d.targetX).strength(0.15)) // Moderate pull to target
-      .force("y", forceY(d => d.targetY).strength(0.15))
-      .on("tick", () => {
-        linkSel.attr("d", (d) => `M${d.source.x},${d.source.y}L${d.target.x},${d.target.y}`);
-        nodeSelection.attr("transform", (d) => `translate(${d.x - containerSize / 2},${d.y - containerSize / 2})`);
+    // Smooth morph with NO physics forces (prevents "repel" during/after).
+    const durationMs = 900;
+    const t = select(svgRef.current)
+      .transition()
+      .duration(durationMs)
+      .ease(easeCubicInOut)
+      .tween("layout-morph", () => {
+        return (k) => {
+          nodes.forEach((n) => {
+            const sx = n.startX ?? n.x ?? 0;
+            const sy = n.startY ?? n.y ?? 0;
+            const tx = n.targetX ?? sx;
+            const ty = n.targetY ?? sy;
+            n.x = sx + (tx - sx) * k;
+            n.y = sy + (ty - sy) * k;
+          });
+          linkSel.attr("d", getLinkPath);
+          nodeSelection.attr("transform", (d) => `translate(${d.x - containerSize / 2},${d.y - containerSize / 2})`);
+        };
       });
 
-    simulationRef.current = simulation;
+    // Mark "simulation" as the active transition so we can stop it on drag.
+    // It's not a real force simulation, but we use the same ref as "something animating".
+    simulationRef.current = { stop: () => select(svgRef.current).interrupt() };
 
-    // Update drag to work with this targeted simulation
-    nodeSelection.call(
-      d3Drag()
-        .on("start", function (event) {
-          if (!event.active) simulation.alphaTarget(0.3).restart();
-          event.subject.fx = event.subject.x;
-          event.subject.fy = event.subject.y;
-        })
-        .on("drag", function (event) {
-          event.subject.fx = event.x;
-          event.subject.fy = event.y;
-        })
-        .on("end", function (event) {
-          if (!event.active) simulation.alphaTarget(0);
-          event.subject.fx = null;
-          event.subject.fy = null;
-        })
-    );
+    t.on("end", () => {
+      // Freeze: keep positions, no physics.
+      simulationRef.current = null;
+      saveBaselinePositions(layoutAlgo);
+      // Ensure drag handlers are bound to the current node selection after morph.
+      applyDragBinding();
+      zoomToFit();
+    });
+
+    // Drag behavior is handled by isPhysicsPlaying effect.
 
     // eslint-disable-next-line react-hooks/exhaustive-deps
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -892,33 +1252,84 @@ export default function LocationGraph(props) {
         filename={props.countryName ? `ConflictNetwork_${props.countryName}_${new Date().toISOString().split('T')[0]}` : undefined}
         sx={{ right: props.isFullscreen ? 56 : 8 }}
       />
-      {!isBelowMd && (
-        <Tooltip title={props.isFullscreen ? "Exit Fullscreen" : "Fullscreen"} placement="left">
-          <IconButton
-            id="peor-fullscreen-button"
-            onClick={() => props.setIsFullscreen(!props.isFullscreen)}
-            size="small"
-            sx={{
-              position: "absolute",
-              top: 8,
-              right: props.isFullscreen ? 96 : 48,
-              zIndex: 900,
-              backgroundColor: "rgba(255,255,255,0.85)",
-              backdropFilter: "blur(4px)",
-              boxShadow: "0 1px 4px rgba(0,0,0,0.2)",
-              "&:hover": {
-                backgroundColor: "rgba(255,255,255,1)",
-              },
-            }}
-          >
-            {props.isFullscreen ? (
-              <FullscreenExitIcon fontSize="small" />
-            ) : (
-              <FullscreenIcon fontSize="small" />
-            )}
-          </IconButton>
-        </Tooltip>
-      )}
+      <Tooltip
+        title={
+          isPhysicsPlaying
+            ? "Pause — stop forces; drag nodes freely without moving others"
+            : "Play — enable forces; dragging moves linked nodes"
+        }
+        placement="left"
+      >
+        <IconButton
+          id="peor-force-toggle-button"
+          onClick={() => setIsPhysicsPlaying((v) => !v)}
+          size="small"
+          sx={{
+            position: "absolute",
+            top: 8,
+            right: props.isFullscreen ? 136 : 88,
+            zIndex: 900,
+            backgroundColor: "rgba(255,255,255,0.85)",
+            backdropFilter: "blur(4px)",
+            boxShadow: "0 1px 4px rgba(0,0,0,0.2)",
+            "&:hover": {
+              backgroundColor: "rgba(255,255,255,1)",
+            },
+          }}
+        >
+          {isPhysicsPlaying ? (
+            <PauseIcon fontSize="small" />
+          ) : (
+            <PlayArrowIcon fontSize="small" />
+          )}
+        </IconButton>
+      </Tooltip>
+      <Tooltip title="Reset node positions" placement="left">
+        <IconButton
+          id="peor-graph-reset-button"
+          onClick={resetToBaseline}
+          size="small"
+          sx={{
+            position: "absolute",
+            top: 8,
+            right: props.isFullscreen ? 176 : 128,
+            zIndex: 900,
+            backgroundColor: "rgba(255,255,255,0.85)",
+            backdropFilter: "blur(4px)",
+            boxShadow: "0 1px 4px rgba(0,0,0,0.2)",
+            "&:hover": {
+              backgroundColor: "rgba(255,255,255,1)",
+            },
+          }}
+        >
+          <RestartAltIcon fontSize="small" />
+        </IconButton>
+      </Tooltip>
+      <Tooltip title={props.isFullscreen ? "Exit Fullscreen" : "Fullscreen"} placement="left">
+        <IconButton
+          id="peor-fullscreen-button"
+          onClick={() => props.setIsFullscreen(!props.isFullscreen)}
+          size="small"
+          sx={{
+            position: "absolute",
+            top: 8,
+            right: props.isFullscreen ? 96 : 48,
+            zIndex: 900,
+            backgroundColor: "rgba(255,255,255,0.85)",
+            backdropFilter: "blur(4px)",
+            boxShadow: "0 1px 4px rgba(0,0,0,0.2)",
+            "&:hover": {
+              backgroundColor: "rgba(255,255,255,1)",
+            },
+          }}
+        >
+          {props.isFullscreen ? (
+            <FullscreenExitIcon fontSize="small" />
+          ) : (
+            <FullscreenIcon fontSize="small" />
+          )}
+        </IconButton>
+      </Tooltip>
       {getActor(selectedActor) ? (
         <ActorCard
           gw_number={props.gw_number}
@@ -974,5 +1385,3 @@ export default function LocationGraph(props) {
     </Box>
   );
 }
-
-

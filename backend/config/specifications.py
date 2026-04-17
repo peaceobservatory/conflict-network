@@ -93,7 +93,9 @@ FULL_PEACE_DATA = "full_peace_data"
 
 PP_SIDE_A_COL = "side_a"
 PP_SIDE_B_COL = "side_b"
+PP_THIRD_PARTY_ID_COL = "third_party_id"
+PP_THIRD_PARTY_SHORT_COL = "third_party_short"
 PP_THIRD_PARTY_COL = "third_party"
-PP_MEDIATED_COL = "mediated"
+PP_MEDIATED_COL = "mediated_negotiations"
 PP_NEGOTIATION_ID_COL = "negotiation_id"
 

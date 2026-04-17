@@ -24,9 +24,12 @@ from config.specifications import (
     DATA_ID_COL,
     DATA_EVENT_TYPE_COL,
     BY_COUNTRY_DIR,
-    COUNTRIES_GW_FILE
+    COUNTRIES_GW_FILE,
+    PP_THIRD_PARTY_SHORT_COL,
+    PP_THIRD_PARTY_COL,
 )
 import json
+import re
 from config.specifications import CURRENT_YEAR
 
 router = APIRouter()
@@ -44,6 +47,32 @@ with open(os.path.join(LIB_DIR, CONFIG_BASE_DIR, ETC_PATH), "r") as f:
 with open(os.path.join(LIB_DIR, CONFIG_BASE_DIR, LTC_PATH), "r") as f:
     LINK_TYPE_COLOURS = json.load(f)
 
+def getNameByID(id, gw_number):
+    """
+    Helper function to get the name of an actor by its ID.
+
+    Args:
+        id (str):           The ID of the relevant actor.
+        gw_number (int):    The Gleditsch + Ward number of the relevant country.
+
+    Returns:
+        str:                The relevant name for a given ID.
+    """
+    try:
+        actors = hf.get_actors(gw_number)
+        relevantActors = [actor for actor in actors.actors if (actor.id == id)]
+        if len(relevantActors) == 1:
+            relActor = relevantActors[0].originalName
+        else:
+            raise ValueError("(base/getNameByID: Found multiple actors for the same ID")
+        return relActor
+    except Exception as e:
+        logger.error(f"Error Results:{e}")
+        return error_response(
+            message=INTERNAL_SERVER_ERROR_MSG,
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        )
+        
 @router.get("/get-events-year")
 async def get_events_year():
     """
@@ -201,7 +230,6 @@ async def get_reports_by_filters(main_actors, start, end, event_types, actor_nam
         cached_data = redis_client.get_value(cache_key)
         cached_backgrounds = redis_client.get_value(background_cache_key)
         if cached_data.get("value") is not None and cached_backgrounds.get("value") is not None:
-            logger.info(LOG_REDIS_MSG)
             data = json.loads(cached_data.get("value"))
             event_dataset = pd.read_json(data, orient="records")
             data = json.loads(cached_backgrounds.get("value"))
@@ -267,9 +295,48 @@ async def get_reports_by_filters(main_actors, start, end, event_types, actor_nam
         by_events = by_events[FRONTEND_EVENT_COLS.keys()].rename(
             columns=FRONTEND_EVENT_COLS
         )
+        from api.peace_processes import get_full_peace_data, get_res_df
+        # peace data filtering
+        peace_data_list = []
+        if (len(main_actors) == 2) and (main_actors[0] != ""):
+            try:
+                # Load peace data
+                peace_df = await anyio.to_thread.run_sync(get_full_peace_data)
+                if peace_df is not None and not peace_df.empty:
+                    actor_a, actor_b = main_actors[0], main_actors[1]
+                    
+                    # Vectorized filtering for performance
+                    # Lowercase and strip for robust matching
+                    a, b = re.escape(actor_a.strip()), re.escape(actor_b.strip())
+                    
+                    tp_series = peace_df[PP_THIRD_PARTY_COL].fillna("").astype(str)
+                    tps_series = peace_df[PP_THIRD_PARTY_SHORT_COL].fillna("").astype(str)
+                    side_a_series = peace_df[DATA_SIDE_A_COL].fillna("").astype(str)
+                    side_b_series = peace_df[DATA_SIDE_B_COL].fillna("").astype(str)
+
+                    # Create masks for mediator match (exact or within semicolon-separated list)
+                    # We use regex boundaries to avoid partial word matches
+                    a_is_mediator = tp_series.str.contains(fr'(?:^|;\s*){a}(?:\s*;|$)', regex=True) | \
+                                    tps_series.str.contains(fr'(?:^|;\s*){a}(?:\s*;|$)', regex=True)
+                    b_is_mediator = tp_series.str.contains(fr'(?:^|;\s*){b}(?:\s*;|$)', regex=True) | \
+                                    tps_series.str.contains(fr'(?:^|;\s*){b}(?:\s*;|$)', regex=True)
+                    
+                    a_is_side = side_a_series.str.contains(fr'(?:^|,\s*){a}(?:\s*,|$)', regex=True) | \
+                                side_b_series.str.contains(fr'(?:^|,\s*){a}(?:\s*,|$)', regex=True)
+                    b_is_side = side_a_series.str.contains(fr'(?:^|,\s*){b}(?:\s*,|$)', regex=True) | \
+                                side_b_series.str.contains(fr'(?:^|,\s*){b}(?:\s*,|$)', regex=True)
+
+                    mask = (a_is_mediator & b_is_side) | (b_is_mediator & a_is_side)
+                    rel_peace_df = peace_df[mask]
+
+                    if not rel_peace_df.empty:
+                        peace_data_list = get_res_df(rel_peace_df)
+            except Exception as e:
+                logger.error(f"Error fetching peace data in reports filter: {e}")
         data = dict(
             event_data=by_events.to_dict(orient="records"),
             background=background_data,
+             peace_data= peace_data_list
         )
         return success_response(
             data=data,
@@ -299,7 +366,6 @@ async def get_available_dates(gw_number):
         cache_key = f"ged_{gw_number}.csv"
         cached_data = redis_client.get_value(cache_key)
         if cached_data.get("value") is not None:
-            logger.info(LOG_REDIS_MSG)
             data = json.loads(cached_data.get("value"))
             event_dataset = pd.read_json(data, orient="records")
 
@@ -443,7 +509,6 @@ async def get_link_ids(actor_names, gw_number):
         cache_key = f"ged_{gw_number}.csv"
         cached_data = redis_client.get_value(cache_key)
         if cached_data.get("value") is not None:
-            logger.info(LOG_REDIS_MSG)
             data = json.loads(cached_data.get("value"))
             event_dataset = pd.read_json(data, orient="records")
 
@@ -466,7 +531,25 @@ async def get_link_ids(actor_names, gw_number):
             message=INTERNAL_SERVER_ERROR_MSG,
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
         )
+def get_newest_event(df):
+    """
+    Helper function to get the date of the newest event in a DataFrame.
 
+    Args:
+        df (pandas.DataFrame):  The relevant DataFrame.
+
+    Returns:
+        str: date of the newest event recorded in the data set.
+    """
+    try:
+        # get newest event
+        if len(df[DATA_EVENT_DATE_DT_COL]) > 0:
+            newest = max(df[DATA_EVENT_DATE_DT_COL]).strftime("%d. %B %Y")
+        else:
+            newest = "-"
+        return newest
+    except Exception as e:
+        logger.error(f"Error Results:{e}")
 
 @router.get("/get-period-info")
 async def get_period_info(id: int, start: str, end: str, gw_number: int):

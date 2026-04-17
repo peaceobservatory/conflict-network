@@ -12,8 +12,8 @@ A fullstack application for visualizing conflict networks, consisting of:
 ### Clone the Repository
 
 ```bash
-git clone https://devops.pitsolutions.com/Python/PEOR/_git/PEOR-ConflictNetwork
-cd PEOR-ConflictNetwork
+git clone https://github.com/peaceobservatory/conflict-network.git
+cd conflict-network
 ```
 
 ---
@@ -54,8 +54,6 @@ Before building, ensure `frontend/.env` points to the correct backend URL:
 # For Docker (local):
 REACT_APP_BASEURL=http://localhost:8000
 
-# For production:
-REACT_APP_BASEURL=https://peor-dev.mypits.org
 ```
 
 ### 2. Build and start all services

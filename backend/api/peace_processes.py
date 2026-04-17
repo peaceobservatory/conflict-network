@@ -1,12 +1,21 @@
 import os
 import logging
 import json
+
+import pandas as pd
 from fastapi import APIRouter, status
 from config.specifications import (
     DATA_NOT_FOUND,
     INTERNAL_SERVER_ERROR_MSG,
     FATALITIES_FILE,
-    NEGOTIATIONS_FILE
+    NEGOTIATIONS_FILE,
+    PP_THIRD_PARTY_SHORT_COL,
+    PP_THIRD_PARTY_ID_COL,
+    PP_MEDIATED_COL,
+    PP_NEGOTIATION_ID_COL,
+    PP_SIDE_A_COL,
+    PP_SIDE_B_COL,
+    PP_THIRD_PARTY_COL,
 )
 from utils.responses import success_response, error_response
 
@@ -74,19 +83,47 @@ def get_full_peace_data():
     Get and return the complete data for 'African Peace Processes'.
     """
     try:
-        import pandas as pd
         peace_data = pd.read_excel(os.path.join(DATA_DIR, 'peace_observatory.xlsx')).fillna(0)
         return peace_data
     except Exception as e:
         logger.error(f"Error loading full peace data: {e}")
         return None
+        
+def get_res_df(df):
+    """
+    Convert a data frames columns into a standardised data frame.
+    """
+    try:
+        new_df = pd.DataFrame()
+        new_df["negotiation_id"] = df["negotiation_id"]
+        new_df["start_year"] = df["start_negotiations_year"]
+        new_df["start_day"] = df["start_negotiations_day"]
+        new_df["end_day"] = df["end_negotiations_day"]
+        new_df["precision_date"]=df["precision_date"]
+        new_df["start_month"] = df["start_negotiations_month"]
+        new_df["end_year"] = df["end_negotiations_year"]
+        new_df["end_month"] = df["end_negotiations_month"]
+        new_df["location_negotiations"] = df["location_negotiations"]
+        new_df["mediated_negotiations"] = df["mediated_negotiations"]
+        new_df["agreement"] = df["agreement"]
+        new_df["peace_agreement"] = df["peace_agreement"]
+        new_df["ceasefire"] = df["ceasefire"]
+        new_df["third_party"] = df["third_party"]
+        new_df["third_party_short"] = df[PP_THIRD_PARTY_SHORT_COL] if PP_THIRD_PARTY_SHORT_COL in df.columns else ""
+        new_df["third_party_id"] = df[PP_THIRD_PARTY_ID_COL] if PP_THIRD_PARTY_ID_COL in df.columns else ""
+        new_df["description"] = df["description"]
+        new_df["town_name"] = df["location_negotiations"]
+        new_df["city"] = df["location_negotiations_country"]
+        new_df.drop_duplicates(inplace=True)
+        return new_df.to_dict(orient="records")
+    except Exception as e:
+        logger.error(f"Error Results:{e}")
 
 def get_filtered_gw(gw_number, df):
     """
     Get and return the subset of data for 'African Peace Processes' whose conflict location is assigned to given GW number.
     """
     try:
-        import pandas as pd
         GW_COLUMN = 'gwno_loc_conflict' # from global_variables.py
         df_copy = df.copy()
         df_copy["found"] = df_copy[GW_COLUMN].apply(

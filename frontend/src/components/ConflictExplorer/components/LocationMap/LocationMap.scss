@@ -35,9 +35,23 @@
     max-height: 100%;
 }
 
+/* ---- Ensure clickable map markers show pointer cursor ---- */
+/* SVG event dots: per-path hover (avoids canvas-wide cursor quirks when preferCanvas is true) */
+.map-container.leaflet-container .peor-map-event-marker,
+.map-container.leaflet-container .leaflet-overlay-pane svg .peor-map-event-marker,
+.map-container.leaflet-container .leaflet-interactive,
+.map-container.leaflet-container .leaflet-marker-icon.leaflet-interactive,
+.map-container.leaflet-container .marker-cluster,
+.map-container.leaflet-container .marker-cluster div,
+.map-container.leaflet-container .peor-cluster-pie,
+.map-container.leaflet-container .peor-cluster-pie svg {
+    cursor: pointer !important;
+}
+
 /* ---- MarkerCluster pie-chart icons ---- */
 .peor-cluster-pie {
     background: transparent !important;
     border: none !important;
     filter: drop-shadow(0 1px 4px rgba(0, 0, 0, 0.35));
+    cursor: pointer !important;
 }

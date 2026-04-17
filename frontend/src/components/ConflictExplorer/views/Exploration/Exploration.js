@@ -48,8 +48,10 @@ export default function Exploration(props) {
   const [needFetching, setNeedFetching] = useState(false);
   const [haveMapData, setHaveMapData] = useState(false);
   const [neighbourDegree, setNeighbourDegree] = useState(0);
-  const [startDate, setStartDate] = useState("2023-06-01");
-  const [endDate, setEndDate] = useState("2023-12-31");
+  const [startDate, setStartDate] = useState("2023-01-01");
+  const [endDate, setEndDate] = useState(() =>
+    new Date().toISOString().slice(0, 10)
+  );
 
   const [nodeMinSize, setNodeMinSize] = useState(1);
   const [selectedInGraph, setSelectedInGraph] = useState([]);
@@ -362,16 +364,28 @@ export default function Exploration(props) {
           "The data for your selected range will be displayed here. On the left, actors are represented as nodes in the graph. By clicking on the nodes, the map on the right is filtered for the selected actors.",
       },
       {
+        title: "Map View",
+        element: ".location-map-wrapper",
+        intro:
+          "On the map, events are coloured by their event type and can be hidden and displayed through the legend. By clicking on an event, more detailed information will be provided.",
+      },
+      {
+        title: "Network Graph",
+        element: ".location-graph-legend",
+        intro:
+          "Links between nodes represent interactions between actors. Depending on the type of interaction, they are shown as cooperative or oppositional links. The width of the links represents the number of mutual involvements. Links can be hidden from the graph through the legend. It is also possible to display links that reflect mediation efforts. Click on a link to get more information about the interactions between two actors.",
+      },
+      {
         title: "Node Interaction",
         element: ".location-graph-wrapper",
         intro:
           "You can click and drag nodes around to create layouts better suiting your needs.",
       },
       {
-        title: "Network Graph",
-        element: ".location-graph-legend",
-        intro:
-          "Links between nodes represent interactions between actors. Depending on the type of interaction, it is represented by a cooperative or opposive link. The width of the links represents the number of mutual involvements. Links can be hidden from the graph through the legend. Get more information about the interactions of two actors by clicking on a link.",
+        title: content.FORCE_SIMULATION_GUIDANCE_TITLE,
+        element: "#peor-force-toggle-button",
+        intro: content.FORCE_SIMULATION_GUIDANCE_TEXT,
+        position: "left",
       },
       {
         title: "Selection Degree",
@@ -379,10 +393,27 @@ export default function Exploration(props) {
         intro: "Set whether to include first degree neighbours in the graph.",
       },
       {
+        title: "Layout Options",
+        element: ".layout-options",
+        intro:
+          "Choose how the network is arranged. Fruchterman-Reingold and Kamada-Kawai are force-directed layouts that pull strongly connected actors closer together and push less connected ones apart. Fruchterman-Reingold emphasizes the overall structure, while Kamada-Kawai often highlights clusters more clearly. Simple Circle places all nodes evenly around a circle.",
+      },
+      {
         title: "Minimum Size",
-        element: ".threshold",
+        element: ".minimum-size",
         intro:
           "Set the minimum number of events in which an actor needs to be involved for its node to appear in the graph.",
+      },
+      {
+        title: "Peace Data",
+        element: ".peace-data-toggle",
+        intro:
+          "Turn this on to display mediation efforts and mediator-party links in the network.",
+      },
+      {
+        title: "Find Nodes",
+        element: ".find-actors",
+        intro: "You can highlight an actor's node in the graph.",
       },
       {
         title: "Reset Selection",
@@ -392,21 +423,10 @@ export default function Exploration(props) {
         position: "right",
       },
       {
-        title: "Find Nodes",
-        element: ".find-actors",
-        intro: "You can highlight an actor's node in the graph.",
-      },
-      {
         title: "Icon Explanation",
         element: ".actor-interaction-legend",
         intro:
           "Each actor type is represented by a specific icon. Here you can learn what the different icons mean.",
-      },
-      {
-        title: "Map View",
-        element: ".location-map-wrapper",
-        intro:  
-          "On the map, events are coloured by their event type and can be hidden and displayed through the legend. By clicking on an event, more detailed information will be provided."
       },
       {
         title: "Now it's your turn!",

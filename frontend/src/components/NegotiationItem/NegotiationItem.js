@@ -1,4 +1,6 @@
 import "./NegotiationItem.scss";
+// Same two-column detail layout as conflict explorer event / peace node cards (EventsCard)
+import "../ConflictExplorer/components/EventsCard/EventsCard.scss";
 import React from "react";
 //External Library
 import { useTable, useExpanded, useSortBy } from "react-table";
@@ -9,15 +11,142 @@ import ExpandMore from "@mui/icons-material/ExpandMore";
 import Typography from "@mui/material/Typography";
 import Stack from "@mui/material/Stack";
 import Box from "@mui/material/Box";
+import Divider from "@mui/material/Divider";
 //Helper
 import { getAgreementText, getDateString } from "../../helper/formatUtils";
 import useDeviceCheck from '../../hooks/useDeviceCheck';
 
 import styles from "../../styles/global.scss";
 
-const ExpandableTable = ({ peaceData, columns }) => {
+const labelSx = { mx: "10px", color: styles.textMedium };
+const valueSx = { mx: "10px", color: styles.textMedium };
+
+function NegotiationDetailRow({ label, children, boldValue }) {
+  return (
+    <div className="events-line">
+      <Typography component="div" fontSize="16px" lineHeight="28px" sx={labelSx}>
+        {label}
+      </Typography>
+      <Typography
+        component="div"
+        fontSize="16px"
+        sx={{ ...valueSx, ...(boldValue ? { fontWeight: "bold" } : {}) }}
+      >
+        {children}
+      </Typography>
+    </div>
+  );
+}
+
+function formatAgreementOutcomes(report) {
+  const yn = (v) => (v === 1 || v === true ? "Yes" : "No");
+  return `Agreement: ${yn(report?.agreement)} | Peace Agreement: ${yn(report?.peace_agreement)} | Ceasefire: ${yn(report?.ceasefire)}`;
+}
+
+function NegotiationExpandedDetails({ report, hideMediationInExpanded, repeatSummaryFields }) {
+  const startStr = getDateString(
+    report.start_year,
+    report.start_month,
+    report.start_day,
+    report.precision_date
+  );
+  const endStr = getDateString(
+    report.end_year,
+    report.end_month,
+    report.end_day,
+    report.precision_date
+  );
+  const dateRange =
+    endStr && endStr !== "----" && startStr !== endStr
+      ? `${startStr} – ${endStr}`
+      : startStr;
+  const locationSummary =
+    [report?.city, report?.town_name].filter(Boolean).join(", ") || "----";
+
+  const thirdPartyLine =
+    report?.third_party &&
+    String(report.third_party).trim().length > 0
+      ? report.third_party_short
+        ? `${report.third_party} (${report.third_party_short})`
+        : String(report.third_party)
+      : null;
+
+  return (
+    <div className="events-all-info">
+      {repeatSummaryFields ? (
+        <>
+          <div className="events-info notes">
+            <div className="events-info-group">
+              <NegotiationDetailRow label="ID">{report.negotiation_id || "—"}</NegotiationDetailRow>
+              <NegotiationDetailRow label="Start date">{startStr}</NegotiationDetailRow>
+              <NegotiationDetailRow label="End date">{endStr && endStr !== "----" ? endStr : "—"}</NegotiationDetailRow>
+              <NegotiationDetailRow label="Location of negotiations">{locationSummary}</NegotiationDetailRow>
+              <NegotiationDetailRow label="Agreement type">{getAgreementText(report)}</NegotiationDetailRow>
+              {!hideMediationInExpanded ? (
+                <NegotiationDetailRow label="Mediation">
+                  {report.mediated_negotiations ? "Yes" : "No"}
+                </NegotiationDetailRow>
+              ) : null}
+            </div>
+          </div>
+          <Divider />
+        </>
+      ) : null}
+
+      {report?.description ? (
+        <>
+          <div className="events-info notes">
+            <div className="events-info-group">
+              <NegotiationDetailRow label="Description" boldValue>
+                {report.description}
+              </NegotiationDetailRow>
+            </div>
+          </div>
+          <Divider />
+        </>
+      ) : null}
+
+      <div className="events-info actor">
+        <div className="events-info-group">
+          {thirdPartyLine ? (
+            <NegotiationDetailRow label="Third party">{thirdPartyLine}</NegotiationDetailRow>
+          ) : null}
+          <NegotiationDetailRow label="Agreement / ceasefire">{formatAgreementOutcomes(report)}</NegotiationDetailRow>
+        </div>
+      </div>
+
+      <Divider />
+      <div className="events-info location">
+        <div className="events-info-group">
+          <NegotiationDetailRow label="Location">
+            {report?.city || "—"}
+            {report?.town_name && report.town_name !== "unknown"
+              ? `, ${report.town_name}`
+              : ""}
+          </NegotiationDetailRow>
+          {report?.location_negotiations ? (
+            <NegotiationDetailRow label="Location negotiations">
+              {report.location_negotiations}
+            </NegotiationDetailRow>
+          ) : null}
+        </div>
+      </div>
+
+      <Divider />
+      <div className="events-info time">
+        <div className="events-info-group">
+          <NegotiationDetailRow label="Negotiation date">{dateRange}</NegotiationDetailRow>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+const ExpandableTable = ({ peaceData, columns, hideMediationInExpanded = false }) => {
   const { getTableProps, getTableBodyProps, headerGroups, rows, prepareRow } =
     useTable({ columns, data: peaceData || [] }, useSortBy, useExpanded);
+
+  const detailColSpan = (columns?.length ?? 0) + 1;
 
     const { isMobile } = useDeviceCheck();
 
@@ -113,171 +242,13 @@ const ExpandableTable = ({ peaceData, columns }) => {
                   </td>
                 </tr>
                 {row.isExpanded && (
-                  <tr className="tableRow">
-                    <td colSpan={7} style={{ padding: "20px" }}>
-                      <Typography
-                        color={styles.extraDarkBlue}
-                        fontSize={styles.fontXsMedium}
-                        fontWeight="600"
-                        sx={{
-                          display: { xs: "block", sm: "none", md: "none" },
-                          marginBottom: "5px",
-                        }}
-                      >
-                        {" "}
-                        ID{" "}
-                      </Typography>
-
-                      <Typography
-                        color={styles.extraDarkBlue}
-                        fontSize={styles.fontXsMedium}
-                        sx={{
-                          display: { xs: "block", sm: "none", md: "none" },
-                          marginBottom: "10px",
-                        }}
-                      >
-                        {row.original.negotiation_id || "--"}
-                      </Typography>
-                      <Typography
-                        color={styles.extraDarkBlue}
-                        fontSize={styles.fontXsMedium}
-                        fontWeight="600"
-                        sx={{
-                          display: { xs: "block", sm: "none", md: "none" },
-                          marginBottom: "5px",
-                        }}
-                      >
-                        Start
-                      </Typography>
-                      <Typography
-                        color={styles.extraDarkBlue}
-                        fontSize={styles.fontXsMedium}
-                        sx={{
-                          display: { xs: "block", sm: "none", md: "none" },
-                          marginBottom: "10px",
-                        }}
-                      >
-                        
-                        {getDateString(
-                   
-                          row.original.start_year, row.original.start_month, row.original.start_day, row.original.precision_date
-                        )}
-
-
-                      </Typography>
-
-                      <Typography
-                        color={styles.extraDarkBlue}
-                        fontSize={styles.fontXsMedium}
-                        fontWeight="600"
-                        sx={{
-                          display: { xs: "block", sm: "none", md: "none" },
-                          marginBottom: "5px",
-                        }}
-                      >
-                        End
-                      </Typography>
-                      <Typography
-                        color={styles.extraDarkBlue}
-                        fontSize={styles.fontXsMedium}
-                        sx={{
-                          display: { xs: "block", sm: "none", md: "none" },
-                          marginBottom: "10px",
-                        }}
-                      >
-                  
-{getDateString(
-row.original.end_year, row.original.end_month, row.original.end_day, row.original.precision_date
-)}
-
-                      </Typography>
-
-                      <Typography
-                        color={styles.extraDarkBlue}
-                        fontSize={styles.fontXsMedium}
-                        fontWeight="600"
-                        sx={{
-                          display: { xs: "block", sm: "none", md: "none" },
-                          marginBottom: "5px",
-                        }}
-                      >
-                        Location of negotiations
-                      </Typography>
-                      <Typography
-                        color={styles.extraDarkBlue}
-                        fontSize={styles.fontXsMedium}
-                        sx={{
-                          display: { xs: "block", sm: "none", md: "none" },
-                          marginBottom: "10px",
-                        }}
-                      >
-                        {row.original?.city || "----"},{" "}
-                        {row.original?.town_name || "----"}
-                      </Typography>
-
-                      <Typography
-                        color={styles.extraDarkBlue}
-                        fontSize={styles.fontXsMedium}
-                        fontWeight="600"
-                        sx={{
-                          display: { xs: "block", sm: "none", md: "none" },
-                          marginBottom: "5px",
-                        }}
-                      >
-                        Meditation
-                      </Typography>
-                      <Typography
-                        color={styles.extraDarkBlue}
-                        fontSize={styles.fontXsMedium}
-                        sx={{
-                          display: { xs: "block", sm: "none", md: "none" },
-                          marginBottom: "10px",
-                        }}
-                      >
-                        {row.original.mediated_negotiations ? "Yes" : "No"}
-                      </Typography>
-
-                      <Typography
-                        color={styles.extraDarkBlue}
-                        fontSize={styles.fontXsMedium}
-                        fontWeight="600"
-                        sx={{
-                          display: { xs: "block", sm: "none", md: "none" },
-                          marginBottom: "5px",
-                        }}
-                      >
-                        Agreement type
-                      </Typography>
-                      <Typography
-                        color={styles.extraDarkBlue}
-                        fontSize={styles.fontXsMedium}
-                        sx={{
-                          display: { xs: "block", sm: "none", md: "none" },
-                          marginBottom: "10px",
-                        }}
-                      >
-                        {getAgreementText(row.original)}
-                      </Typography>
-
-                      {row.original.third_party.length > 0 ? (
-                        <Typography
-                          fontWeight="600"
-                          pb={0}
-                          fontSize={styles.fontXsMedium}
-                          color={styles.extraDarkBlue}
-                          sx={{ marginBottom: "5px" }}
-                        >
-                          {"Third Party: " + row.original.third_party}
-                        </Typography>
-                      ) : null}
-                      {row.original?.description && (
-                        <Typography
-                          fontSize={styles.fontXsMedium}
-                          color={styles.extraDarkBlue}
-                        >
-                          {row.original.description}
-                        </Typography>
-                      )}
+                  <tr className="tableRow negotiation-expanded-row">
+                    <td colSpan={detailColSpan} style={{ padding: 0, verticalAlign: "top", borderTop: "none" }}>
+                      <NegotiationExpandedDetails
+                        report={row.original}
+                        hideMediationInExpanded={hideMediationInExpanded}
+                        repeatSummaryFields={columns.length <= 2}
+                      />
                     </td>
                   </tr>
                 )}
